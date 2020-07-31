@@ -18,6 +18,9 @@ MARKETS = [
     "btc_usd",
     "btc_gbp",
     "xmr_btc",
+    "bsq_btc",
+    "btc_brl",
+    "btc_cad",
 ]
 COINBASE_MARKETS = ["btc_eur", "btc_usd", "btc_gbp"]
 OFFERS_URL = "https://markets.bisq.network/api/offers?market={}"
@@ -93,6 +96,9 @@ PRECISION = {
     "gbp": 2,
     "btc": 4,
     "xmr": 4,
+    "bsq": 2,
+    "brl": 2,
+    "cad": 2,
 }
 ICONS = {
     "buy": "https://raw.githubusercontent.com/pingiun/BisqBot/1124f373edacf0da1c4cd20b5cc7fbb2cf6f2e95/buy_icon.png",
@@ -148,13 +154,20 @@ def query_title(offer, quote, base):
 
 
 def query_desc(offer, quote, base):
-    above_below = "above" if float(offer["price"]) > prices[f"{quote}_{base}"] else "below"
-    percent = abs(1 - float(offer["price"]) / prices[f"{quote}_{base}"])
-    return f"Use {METHODS[offer['payment_method']]} to buy {float(offer['amount'])} for {float(offer['price'])} per {quote.upper()} ({percent:.2%} {above_below} market price)"
+    percentinfo = ""
+    if prices.get(f"{quote}_{base}"):
+        above_below = "above" if float(offer["price"]) > prices[f"{quote}_{base}"] else "below"
+        percent = abs(1 - float(offer["price"]) / prices[f"{quote}_{base}"])
+        percentinfo = f" ({percent:.2%} {above_below} market price)"
+
+    return f"Use {METHODS[offer['payment_method']]} to buy {float(offer['amount'])} for {float(offer['price'])} per {quote.upper()}{percentinfo}"
 
 
 def query_msg(offer, quote, base):
-    percent = abs(1 - prices[f"{quote}_{base}"] / float(offer["price"]))
+    percentinfo = ""
+    if prices.get(f"{quote}_{base}"):
+        percent = abs(1 - prices[f"{quote}_{base}"] / float(offer["price"]))
+        percentinfo = f" ({percent:+.2%} market)"
     if offer["amount"] != offer["min_amount"]:
         quote_minmax = f"{prec(offer['min_amount'], quote)}-{prec(offer['amount'], quote)}"
         base_minmax = f"{prec(float(offer['min_amount'])*float(offer['price']), base)}-{prec(float(offer['amount'])*float(offer['price']), base)}"
@@ -165,7 +178,7 @@ def query_msg(offer, quote, base):
     return InputTextMessageContent(
         message_text=f"<b><a href=\"https://bisq.network\">Bisq</a> currently has an offer to {offer['direction'].lower()} "
         f"{prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}</b>\n\n"
-        f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} ({percent:+.2%} market)\n"
+        f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)}{percentinfo}\n"
         f"{quote.upper()} (min-max): {quote_minmax}\n"
         f"{base.upper()} (min-max): {base_minmax}\n"
         f"Payment method: {METHODS[offer['payment_method']]}\n"
@@ -178,18 +191,21 @@ def query_msg(offer, quote, base):
 def overview(quote, base):
     market = f"{quote}_{base}"
     best_buy = offers[market]["buys"][1]
-    buy_percent = abs(1 - prices[f"{quote}_{base}"] / float(best_buy["price"]))
-    if buy_percent < -0.01:
-        buy_prct = "<b>{:+.2%}</b>".format(buy_percent)
-    else:
-        buy_prct = "{:+.2%}".format(buy_percent)
-
     best_sell = offers[market]["sells"][1]
-    sell_percent = abs(1 - prices[f"{quote}_{base}"] / float(best_sell["price"]))
-    if sell_percent < -0.01:
-        sell_prct = "<b>{:+.2%}</b>".format(sell_percent)
-    else:
-        sell_prct = "{:+.2%}".format(sell_percent)
+    buy_prct = ""
+    sell_prct = ""
+    if prices.get(f"{quote}_{base}"):
+        buy_percent = abs(1 - prices[f"{quote}_{base}"] / float(best_buy["price"]))
+        if buy_percent < -0.01:
+            buy_prct = "<b>{:+.2%}</b>".format(buy_percent)
+        else:
+            buy_prct = "{:+.2%}".format(buy_percent)
+
+        sell_percent = abs(1 - prices[f"{quote}_{base}"] / float(best_sell["price"]))
+        if sell_percent < -0.01:
+            sell_prct = "<b>{:+.2%}</b>".format(sell_percent)
+        else:
+            sell_prct = "{:+.2%}".format(sell_percent)
     market_txt = market.replace("_", "/").upper()
     content = InputTextMessageContent(
         message_text=f"Offer size: <b>{prec(best_sell['volume'], base)} {base.upper()}</b> / {prec(best_sell['amount'], quote)} {quote.upper()}\n"
@@ -208,7 +224,7 @@ def overview(quote, base):
 
 
 def empty_query():
-    return [overview("btc", "usd"), overview("btc", "eur"), overview("xmr", "btc"), overview("btc", "gbp")] + [
+    return [overview(market.split("_")[0], market.split("_")[1]) for market in MARKETS] + [
         InlineQueryResultArticle(
             id=offer["offer_id"][:64],
             title=query_title(offer, "btc", cur),
@@ -217,7 +233,7 @@ def empty_query():
             thumb_url=ICONS[offer['direction'].lower()],
         )
         for cur, what in product(["usd", "eur"], ["buys", "sells"])
-        for offer in offers[f"btc_{cur}"][what][:2]
+        for offer in offers[f"btc_{cur}"][what][:1]
     ]
 
 
@@ -236,6 +252,17 @@ def query(update, context):
             ("british", "btc_gbp"),
             ("xmr", "xmr_btc"),
             ("monero", "xmr_btc"),
+            ("bsq", "bsq_btc"),
+            ("bisq", "bsq_btc"),
+            ("brl", "btc_brl"),
+            ("brazilian", "btc_brl"),
+            ("brasil", "btc_brl"),
+            ("real", "btc_brl"),
+            ("dollar", "btc_cad"),
+            ("canadian", "btc_cad"),
+            ("canada", "btc_cad"),
+            ("cad", "btc_cad"),
+            ("loonie", "btc_cad"),
         ]:
             if word.lower() in cur.lower():
                 markets.append(market)
@@ -245,6 +272,7 @@ def query(update, context):
             filters.append("sells")
     if not markets and not filters:
         update.inline_query.answer(empty_query(), cache_time=60)
+    markets = set(markets)
     if not filters:
         answers += [overview(market.split("_")[0], market.split("_")[1]) for market in markets]
         filters = ["buys", "sells"]
@@ -259,10 +287,10 @@ def query(update, context):
             input_message_content=query_msg(offer, quote, base),
             thumb_url=ICONS[offer['direction'].lower()],
         )
-        for (quote, base), what in product(markets, filters)
+        for what, (quote, base) in product(filters, markets)
         for offer in offers[f"{quote}_{base}"][what][:10]
     ]
-    update.inline_query.answer(answers, cache_time=60)
+    update.inline_query.answer(answers[:10], cache_time=60)
 
 
 def start(update, context):
@@ -273,10 +301,14 @@ def start(update, context):
     )
 
 
-def update_all(*args):
+def update_all(context=None):
     for market in MARKETS:
+        if context is not None and not context.dispatcher.running:
+            return
         update_market(market)
     for market in COINBASE_MARKETS:
+        if context is not None and not context.dispatcher.running:
+            return
         update_price(market.replace("btc_", ""))
     update_prices_poliniex(["BTC_XMR"])
 
@@ -285,7 +317,7 @@ def main():
     update_all()
     updater = Updater(token=TG_TOKEN, use_context=True)
     job_queue = updater.job_queue
-    job_queue.run_repeating(callback=update_all, interval=60)
+    job_queue.run_repeating(callback=update_all, interval=90)
     dispatcher = updater.dispatcher
     dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
