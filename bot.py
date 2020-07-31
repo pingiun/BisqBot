@@ -19,7 +19,7 @@ MARKETS = [
     "btc_gbp",
     "xmr_btc",
 ]
-DEFAULT_MARKETS = ["btc_eur", "btc_usd"]
+COINBASE_MARKETS = ["btc_eur", "btc_usd", "btc_gbp"]
 OFFERS_URL = "https://markets.bisq.network/api/offers?market={}"
 PRICE_URL = "https://api.coinbase.com/v2/prices/BTC-{}/spot"
 POLINIEX_URL = "https://poloniex.com/public?command=returnTicker"
@@ -93,6 +93,10 @@ PRECISION = {
     "gbp": 2,
     "btc": 4,
     "xmr": 4,
+}
+ICONS = {
+    "buy": "https://raw.githubusercontent.com/pingiun/BisqBot/1124f373edacf0da1c4cd20b5cc7fbb2cf6f2e95/buy_icon.png",
+    "sell": "https://raw.githubusercontent.com/pingiun/BisqBot/1124f373edacf0da1c4cd20b5cc7fbb2cf6f2e95/sell_icon.png",
 }
 
 offers = {}
@@ -196,20 +200,21 @@ def overview(quote, base):
         parse_mode="html",
     )
     return InlineQueryResultArticle(
-        id=f"overview{market} - {len(offers[market]["buys"])} bids / {len(offers[market]["sells"])} asks",
-        title=f"{market_txt}",
+        id=f"overview{market}",
+        title=f"{market_txt} - {len(offers[market]['buys'])} bids / {len(offers[market]['sells'])} asks",
         description=f"Overview of the {market_txt} Bisq market",
         input_message_content=content,
     )
 
 
 def empty_query():
-    return [overview("btc", "usd"), overview("btc", "eur"), overview("xmr", "btc")] + [
+    return [overview("btc", "usd"), overview("btc", "eur"), overview("xmr", "btc"), overview("btc", "gbp")] + [
         InlineQueryResultArticle(
             id=offer["offer_id"][:64],
             title=query_title(offer, "btc", cur),
             description=query_desc(offer, "btc", cur),
             input_message_content=query_msg(offer, "btc", cur),
+            thumb_url=ICONS[offer['direction'].lower()],
         )
         for cur, what in product(["usd", "eur"], ["buys", "sells"])
         for offer in offers[f"btc_{cur}"][what][:2]
@@ -244,7 +249,7 @@ def query(update, context):
         answers += [overview(market.split("_")[0], market.split("_")[1]) for market in markets]
         filters = ["buys", "sells"]
     if not markets:
-        markets = DEFAULT_MARKETS
+        markets = MARKETS
     markets = [(market.split("_")[0], market.split("_")[1]) for market in markets]
     answers += [
         InlineQueryResultArticle(
@@ -252,6 +257,7 @@ def query(update, context):
             title=query_title(offer, quote, base),
             description=query_desc(offer, quote, base),
             input_message_content=query_msg(offer, quote, base),
+            thumb_url=ICONS[offer['direction'].lower()],
         )
         for (quote, base), what in product(markets, filters)
         for offer in offers[f"{quote}_{base}"][what][:10]
@@ -270,7 +276,7 @@ def start(update, context):
 def update_all(*args):
     for market in MARKETS:
         update_market(market)
-    for market in DEFAULT_MARKETS:
+    for market in COINBASE_MARKETS:
         update_price(market.replace("btc_", ""))
     update_prices_poliniex(["BTC_XMR"])
 
