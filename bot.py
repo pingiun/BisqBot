@@ -5,12 +5,14 @@ import os
 
 from itertools import product
 
+import redis
 import requests
 
 from telegram import InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import CommandHandler, Updater, InlineQueryHandler
 
 logging.basicConfig(level=logging.DEBUG)
+red = redis.StrictRedis()
 
 TG_TOKEN = os.environ["TG_TOKEN"]
 MARKETS = [
@@ -146,8 +148,10 @@ def capitalize(x):
 def no_btc(x):
     return x.lower().replace("btc", "").replace("_", "")
 
+
 def prec(value, cur):
     return format(float(value), f"0.{PRECISION[cur]}f")
+
 
 def query_title(offer, quote, base):
     return f"You can {offer['direction'].lower()} {prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}"
@@ -156,7 +160,9 @@ def query_title(offer, quote, base):
 def query_desc(offer, quote, base):
     percentinfo = ""
     if prices.get(f"{quote}_{base}"):
-        above_below = "above" if float(offer["price"]) > prices[f"{quote}_{base}"] else "below"
+        above_below = (
+            "above" if float(offer["price"]) > prices[f"{quote}_{base}"] else "below"
+        )
         percent = abs(1 - float(offer["price"]) / prices[f"{quote}_{base}"])
         percentinfo = f" ({percent:.2%} {above_below} market price)"
 
@@ -169,7 +175,9 @@ def query_msg(offer, quote, base):
         percent = abs(1 - prices[f"{quote}_{base}"] / float(offer["price"]))
         percentinfo = f" ({percent:+.2%} market)"
     if offer["amount"] != offer["min_amount"]:
-        quote_minmax = f"{prec(offer['min_amount'], quote)}-{prec(offer['amount'], quote)}"
+        quote_minmax = (
+            f"{prec(offer['min_amount'], quote)}-{prec(offer['amount'], quote)}"
+        )
         base_minmax = f"{prec(float(offer['min_amount'])*float(offer['price']), base)}-{prec(float(offer['amount'])*float(offer['price']), base)}"
     else:
         quote_minmax = f"{prec(offer['min_amount'], quote)}"
@@ -224,13 +232,15 @@ def overview(quote, base):
 
 
 def empty_query():
-    return [overview(market.split("_")[0], market.split("_")[1]) for market in MARKETS] + [
+    return [
+        overview(market.split("_")[0], market.split("_")[1]) for market in MARKETS
+    ] + [
         InlineQueryResultArticle(
             id=offer["offer_id"][:64],
             title=query_title(offer, "btc", cur),
             description=query_desc(offer, "btc", cur),
             input_message_content=query_msg(offer, "btc", cur),
-            thumb_url=ICONS[offer['direction'].lower()],
+            thumb_url=ICONS[offer["direction"].lower()],
         )
         for cur, what in product(["usd", "eur"], ["buys", "sells"])
         for offer in offers[f"btc_{cur}"][what][:1]
@@ -274,7 +284,9 @@ def query(update, context):
         update.inline_query.answer(empty_query(), cache_time=60)
     markets = set(markets)
     if not filters:
-        answers += [overview(market.split("_")[0], market.split("_")[1]) for market in markets]
+        answers += [
+            overview(market.split("_")[0], market.split("_")[1]) for market in markets
+        ]
         filters = ["buys", "sells"]
     if not markets:
         markets = MARKETS
@@ -285,7 +297,7 @@ def query(update, context):
             title=query_title(offer, quote, base),
             description=query_desc(offer, quote, base),
             input_message_content=query_msg(offer, quote, base),
-            thumb_url=ICONS[offer['direction'].lower()],
+            thumb_url=ICONS[offer["direction"].lower()],
         )
         for what, (quote, base) in product(filters, markets)
         for offer in offers[f"{quote}_{base}"][what][:10]
@@ -297,20 +309,64 @@ def start(update, context):
     update.message.reply_text(
         "You found the BisqBot! Currently I don't do anything in private chats, but"
         " feel free to try my inline mode in this chat.\n Just start by typing @BisqBot, then you can search for"
-        " markets and offers with keywords like eur, usd, buy and sell."
+        " markets and offers with keywords like eur, usd, buy and sell.\n\n"
+        "Follow @bitcoinbuys or @bitcoinbuyseuro to receive notifications on good BTC buy offers"
     )
+
+
+def send_to_channel(context):
+    for market, channel in [
+        ("btc_usd", "@bitcoinbuys"),
+        ("btc_eur", "@bitcoinbuyseuro"),
+    ]:
+        logging.debug(f"Checking good buys for {market}")
+        quote, base = market.split("_")[0], market.split("_")[1]
+        for offer in offers[market]["sells"]:
+            percent = 1 - prices[market] / float(offer["price"])
+            # if percent > -0.005:
+            #     continue
+            if red.sismember("bisqoffers", offer["offer_id"]):
+                continue
+            red.sadd("bisqoffers", offer["offer_id"])
+            if offer["amount"] != offer["min_amount"]:
+                quote_minmax = (
+                    f"{prec(offer['min_amount'], quote)}-{prec(offer['amount'], quote)}"
+                )
+                base_minmax = f"{prec(float(offer['min_amount'])*float(offer['price']), base)}-{prec(float(offer['amount'])*float(offer['price']), base)}"
+            else:
+                quote_minmax = f"{prec(offer['min_amount'], quote)}"
+                base_minmax = (
+                    f"{prec(float(offer['min_amount'])*float(offer['price']), base)}"
+                )
+            context.bot.send_message(
+                channel, ("❇️" * round(abs(percent) * 100)) +
+                f'<b>{abs(percent):.2%} lower than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
+                f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} (current market price: {prices[market]})\n"
+                f"{quote.upper()} (min-max): {quote_minmax}\n"
+                f"{base.upper()} (min-max): {base_minmax}\n"
+                f"Payment method: {METHODS[offer['payment_method']]}\n"
+                f"Offer ID: {offer['offer_id'].split('-')[0]}",
+                parse_mode="html",
+                disable_web_page_preview=True,
+            )
+
+
+def analyze(update, context):
+    send_to_channel(context)
 
 
 def update_all(context=None):
     for market in MARKETS:
-        if context is not None and not context.dispatcher.running:
+        if context is not None and not context.job_queue._running:
             return
         update_market(market)
     for market in COINBASE_MARKETS:
-        if context is not None and not context.dispatcher.running:
+        if context is not None and not context.job_queue._running:
             return
         update_price(market.replace("btc_", ""))
     update_prices_poliniex(["BTC_XMR"])
+    if context:
+        context.job_queue.run_once(callback=send_to_channel, when=1)
 
 
 def main():
@@ -321,6 +377,7 @@ def main():
     dispatcher = updater.dispatcher
     dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
+    dispatcher.add_handler(CommandHandler(callback=analyze, command="analyze"))
     updater.start_polling()
     updater.idle()
 
