@@ -209,7 +209,7 @@ def overview(quote, base):
         else:
             buy_prct = "{:+.2%}".format(buy_percent)
 
-        sell_percent = abs(1 - prices[f"{quote}_{base}"] / float(best_sell["price"]))
+        sell_percent = abs(1 - float(best_sell["price"]) / prices[f"{quote}_{base}"])
         if sell_percent < -0.01:
             sell_prct = "<b>{:+.2%}</b>".format(sell_percent)
         else:
@@ -276,9 +276,9 @@ def query(update, context):
         ]:
             if word.lower() in cur.lower():
                 markets.append(market)
-        if is_prefix(word.lower(), "buys"):
+        if is_prefix(word.lower(), "buys") or is_prefix(word.lower(), "asks"):
             filters.append("buys")
-        if is_prefix(word.lower(), "sells"):
+        if is_prefix(word.lower(), "sells") or is_prefix(word.lower(), "bids"):
             filters.append("sells")
     if not markets and not filters:
         update.inline_query.answer(empty_query(), cache_time=60)
@@ -291,17 +291,22 @@ def query(update, context):
     if not markets:
         markets = MARKETS
     markets = [(market.split("_")[0], market.split("_")[1]) for market in markets]
-    answers += [
-        InlineQueryResultArticle(
-            id=offer["offer_id"][:64],
-            title=query_title(offer, quote, base),
-            description=query_desc(offer, quote, base),
-            input_message_content=query_msg(offer, quote, base),
-            thumb_url=ICONS[offer["direction"].lower()],
-        )
-        for what, (quote, base) in product(filters, markets)
-        for offer in offers[f"{quote}_{base}"][what][:10]
-    ]
+    for i in range(10):
+        for (quote, base) in markets:
+            for what in filters:
+                try:
+                    offer = offers[f"{quote}_{base}"][what][i]
+                    answers.append(
+                        InlineQueryResultArticle(
+                            id=offer["offer_id"][:64],
+                            title=query_title(offer, quote, base),
+                            description=query_desc(offer, quote, base),
+                            input_message_content=query_msg(offer, quote, base),
+                            thumb_url=ICONS[offer["direction"].lower()],
+                        )
+                    )
+                except IndexError:
+                    pass
     update.inline_query.answer(answers[:10], cache_time=60)
 
 
@@ -323,8 +328,8 @@ def send_to_channel(context):
         quote, base = market.split("_")[0], market.split("_")[1]
         for offer in offers[market]["sells"]:
             percent = 1 - prices[market] / float(offer["price"])
-            # if percent > -0.005:
-            #     continue
+            if percent > -0.005:
+                continue
             if red.sismember("bisqoffers", offer["offer_id"]):
                 continue
             red.sadd("bisqoffers", offer["offer_id"])
@@ -339,8 +344,9 @@ def send_to_channel(context):
                     f"{prec(float(offer['min_amount'])*float(offer['price']), base)}"
                 )
             context.bot.send_message(
-                channel, ("❇️" * round(abs(percent) * 100)) +
-                f'<b>{abs(percent):.2%} lower than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
+                channel,
+                ("❇️" * round(abs(percent) * 100))
+                + f'<b>{abs(percent):.2%} lower than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
                 f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} (current market price: {prices[market]})\n"
                 f"{quote.upper()} (min-max): {quote_minmax}\n"
                 f"{base.upper()} (min-max): {base_minmax}\n"
@@ -377,7 +383,7 @@ def main():
     dispatcher = updater.dispatcher
     dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
-    dispatcher.add_handler(CommandHandler(callback=analyze, command="analyze"))
+    # dispatcher.add_handler(CommandHandler(callback=analyze, command="analyze"))
     updater.start_polling()
     updater.idle()
 
