@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 
+import json
 import logging
 import os
+import time
 
+from datetime import date
 from itertools import product
 
 import redis
 import requests
 
 from telegram import InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import CommandHandler, Updater, InlineQueryHandler
+from telegram.ext import ChosenInlineResultHandler, CommandHandler, MessageHandler, Updater, InlineQueryHandler
+from telegram.ext.filters import Filters
 
 logging.basicConfig(level=logging.DEBUG)
 red = redis.StrictRedis()
 
 TG_TOKEN = os.environ["TG_TOKEN"]
+STATE_DIRECTORY = os.getenv("STATE_DIRECTORY", os.getcwd())
+chosenquerylog = open(os.path.join(STATE_DIRECTORY, "chosen_query.ndjson"), "a")
 MARKETS = [
     "btc_eur",
     "btc_usd",
@@ -136,6 +142,15 @@ def update_prices_poliniex(filters):
             prices[idx] = (float(values["lowestAsk"]) + float(values["highestBid"])) / 2
     logging.debug(prices)
 
+def report(update, type_):
+    try:
+        red.sadd(f"bisqbot:{type_}_users_total", update.effective_user.id)
+        red.sadd(f"bisqbot:{type_}_users:{date.today()}", update.effective_user.id)
+        if type_ != "start":
+            red.incr(f"bisqbot:amount_{type_}_total")
+            red.incr(f"bisqbot:amount_{type_}:{date.today()}")
+    except Exception as e:
+        logging.exception(e)
 
 def is_prefix(chk, x):
     return x[: len(chk)] == chk
@@ -248,6 +263,7 @@ def empty_query():
 
 
 def query(update, context):
+    report(update, "query")
     words = update.inline_query.query.split()
     markets = []
     filters = []
@@ -311,11 +327,12 @@ def query(update, context):
 
 
 def start(update, context):
+    report(update, "start")
     update.message.reply_text(
         "You found the BisqBot! Currently I don't do anything in private chats, but"
         " feel free to try my inline mode in this chat.\n Just start by typing @BisqBot, then you can search for"
         " markets and offers with keywords like eur, usd, buy and sell.\n\n"
-        "Follow @bitcoinbuys or @bitcoinbuyseuro to receive notifications on good BTC buy offers"
+        "Follow @bitcoinbuys or @bitcoinbuyseuro to receive notifications on good BTC buy offers. Contact @pingiun for feedback on this bot."
     )
 
 
@@ -328,6 +345,7 @@ def send_to_channel(context):
         quote, base = market.split("_")[0], market.split("_")[1]
         for offer in offers[market]["sells"]:
             percent = 1 - prices[market] / float(offer["price"])
+            logging.debug(f"Found trade with {percent}")
             if percent > -0.005:
                 continue
             if red.sismember("bisqoffers", offer["offer_id"]):
@@ -357,8 +375,22 @@ def send_to_channel(context):
             )
 
 
-def analyze(update, context):
-    send_to_channel(context)
+def other(update, context):
+    text = update.message.text
+    if update.message.via_bot:
+        return
+    if any(
+        [
+            word in text
+            for word in ["usd", "eur", "buy", "sell", "cad", "btc", "xmr", "@BisqBot"]
+        ]
+    ):
+        report(update, "hint")
+        update.message.reply_text(
+            'Psst this bot only works in <a href="https://telegram.org/blog/inline-bots">inline mode</a>. Start by typing @BisqBot and check out the inline results. You can narrow down your search with keywords like usd, brl, or buy/sell.',
+            parse_mode="html",
+            disable_web_page_preview=True,
+        )
 
 
 def update_all(context=None):
@@ -374,18 +406,51 @@ def update_all(context=None):
     if context:
         context.job_queue.run_once(callback=send_to_channel, when=1)
 
+def inline_result(update, context):
+    report(update, "query_result")
+    chosenquerylog.write(update.chosen_inline_result.to_json())
+    chosenquerylog.write("\n")
 
 def main():
-    update_all()
+    global offers
+    global prices
+
+    first = 0
+    offers_file = os.path.join(STATE_DIRECTORY, "offers.json")
+    prices_file = os.path.join(STATE_DIRECTORY, "prices.json")
+    try:
+        if time.time() - os.path.getmtime(offers_file) > 180:
+            raise Exception("File too old")
+        if time.time() - os.path.getmtime(prices_file) > 180:
+            raise Exception("File too old")
+        with open(offers_file, "r") as f:
+            offers = json.load(f)
+        with open(prices_file, "r") as f:
+            prices = json.load(f)
+        if not offers or not prices:
+            raise Exception("Empty file")
+    except Exception as e:
+        logging.debug(e)
+        update_all()
+        first = 90
+
     updater = Updater(token=TG_TOKEN, use_context=True)
     job_queue = updater.job_queue
-    job_queue.run_repeating(callback=update_all, interval=90)
+    # job_queue.run_once(callback=send_to_channel, when=1)
+    job_queue.run_repeating(callback=update_all, first=first, interval=90)
     dispatcher = updater.dispatcher
     dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
-    # dispatcher.add_handler(CommandHandler(callback=analyze, command="analyze"))
+    dispatcher.add_handler(MessageHandler(callback=other, filters=Filters.text))
+    dispatcher.add_handler(ChosenInlineResultHandler(callback=inline_result))
     updater.start_polling()
     updater.idle()
+
+    with open(offers_file, "w") as f:
+        json.dump(offers, f)
+    with open(prices_file, "w") as f:
+        json.dump(prices, f)
+    chosenquerylog.close()
 
 
 if __name__ == "__main__":
