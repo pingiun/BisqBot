@@ -130,6 +130,29 @@ prices = {}
 updater = None
 
 
+def is_prefix(chk, x):
+    return x[: len(chk)] == chk
+
+
+def prec(value, cur):
+    return format(float(value), f"0.{PRECISION[cur]}f")
+
+
+def query_title(offer, quote, base):
+    return f"You can {INV_DIRECT[offer['direction']].lower()} {prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}"
+
+
+def report(update, type_):
+    try:
+        red.sadd(f"bisqbot:{type_}_users_total", update.effective_user.id)
+        red.sadd(f"bisqbot:{type_}_users:{date.today()}", update.effective_user.id)
+        if type_ != "start":
+            red.incr(f"bisqbot:amount_{type_}_total")
+            red.incr(f"bisqbot:amount_{type_}:{date.today()}")
+    except Exception as e:
+        logging.exception(e)
+
+
 def update_market(market):
     global offers
     logging.debug(f"Downloading {market} market")
@@ -165,35 +188,14 @@ def update_prices_kraken(markets):
     logging.debug(prices)
 
 
-def report(update, type_):
-    try:
-        red.sadd(f"bisqbot:{type_}_users_total", update.effective_user.id)
-        red.sadd(f"bisqbot:{type_}_users:{date.today()}", update.effective_user.id)
-        if type_ != "start":
-            red.incr(f"bisqbot:amount_{type_}_total")
-            red.incr(f"bisqbot:amount_{type_}:{date.today()}")
-    except Exception as e:
-        logging.exception(e)
-
-
-def is_prefix(chk, x):
-    return x[: len(chk)] == chk
-
-
-def capitalize(x):
-    return x[0].upper() + x[1:].lower()
-
-
-def no_btc(x):
-    return x.lower().replace("btc", "").replace("_", "")
-
-
-def prec(value, cur):
-    return format(float(value), f"0.{PRECISION[cur]}f")
-
-
-def query_title(offer, quote, base):
-    return f"You can {INV_DIRECT[offer['direction']].lower()} {prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}"
+def update_all(context=None):
+    for market in MARKETS:
+        if updater is not None and not updater.is_idle:
+            return
+        update_market(market)
+    update_prices_kraken(KRAKEN_MARKETS)
+    if context:
+        context.job_queue.run_once(callback=send_to_channel, when=1)
 
 
 def query_desc(offer, quote, base):
@@ -237,8 +239,8 @@ def query_msg(offer, quote, base):
 
 def overview(quote, base):
     market = f"{quote}_{base}"
-    best_buy = offers[market]["buys"][1]
-    best_sell = offers[market]["sells"][1]
+    best_buy = offers[market]["buys"][0]
+    best_sell = offers[market]["sells"][0]
     buy_market_info = sell_market_info = ""
 
     if prices.get(f"{quote}_{base}"):
@@ -287,6 +289,66 @@ def empty_query():
         for cur, what in product(["usd", "eur"], ["buys", "sells"])
         for offer in offers[f"btc_{cur}"][what][:1]
     ]
+
+
+def send_to_channel(context):
+    compare_percent = {
+        "btc_usd": 0.0,
+        "btc_eur": 0.005,
+        "btc_cad": -0.04,
+    }
+    for market, channel in [
+        ("btc_usd", "@bitcoinbuys"),
+        ("btc_eur", "@bitcoinbuyseuro"),
+        ("btc_cad", "@bitcoinbuyscad"),
+    ]:
+        logging.debug(f"Checking good buys for {market}")
+        quote, base = market.split("_")[0], market.split("_")[1]
+        for offer in offers[market]["sells"]:
+            percent = 1 - float(offer["price"]) / prices[market]
+            logging.debug(f"Found trade with {percent}")
+            # Skip if not higher than compare percent
+            if percent <= compare_percent[market]:
+                continue
+            if red.sismember("bisqoffers", offer["offer_id"]):
+                continue
+            red.sadd("bisqoffers", offer["offer_id"])
+            if offer["amount"] != offer["min_amount"]:
+                quote_minmax = (
+                    f"{prec(offer['min_amount'], quote)}-{prec(offer['amount'], quote)}"
+                )
+                base_minmax = f"{prec(float(offer['min_amount'])*float(offer['price']), base)}-{prec(float(offer['amount'])*float(offer['price']), base)}"
+            else:
+                quote_minmax = f"{prec(offer['min_amount'], quote)}"
+                base_minmax = (
+                    f"{prec(float(offer['min_amount'])*float(offer['price']), base)}"
+                )
+            lower_higher = "higher" if percent < 0.0 else "lower"
+            try:
+                context.bot.send_message(
+                    channel,
+                    ("❇️" * max(0, round(percent * 100)))
+                    + f'<b>{abs(percent):.2%} {lower_higher} than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
+                    f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} (current market price: {prices[market]})\n"
+                    f"{quote.upper()} (min-max): {quote_minmax}\n"
+                    f"{base.upper()} (min-max): {base_minmax}\n"
+                    f"Payment method: {METHODS[offer['payment_method']]}\n"
+                    f"Offer ID: {offer['offer_id'].split('-')[0]}",
+                    parse_mode="html",
+                    disable_web_page_preview=True,
+                )
+            except telegram.error.Unauthorized as e:
+                logging.exception(e)
+
+
+def start(update, context):
+    report(update, "start")
+    update.message.reply_text(
+        "You found the BisqBot! Currently I don't do anything in private chats, but"
+        " feel free to try my inline mode in this chat.\nJust start by typing @BisqBot, then you can search for"
+        " markets and offers with keywords like eur, usd, buy and sell.\n\n"
+        "Follow @bitcoinbuys, @bitcoinbuyseuro or @bitcoinbuyscad to receive notifications on good BTC buy offers. Contact @pingiun for feedback on this bot."
+    )
 
 
 def query(update, context):
@@ -353,66 +415,6 @@ def query(update, context):
     update.inline_query.answer(answers[:10], cache_time=60)
 
 
-def start(update, context):
-    report(update, "start")
-    update.message.reply_text(
-        "You found the BisqBot! Currently I don't do anything in private chats, but"
-        " feel free to try my inline mode in this chat.\nJust start by typing @BisqBot, then you can search for"
-        " markets and offers with keywords like eur, usd, buy and sell.\n\n"
-        "Follow @bitcoinbuys, @bitcoinbuyseuro or @bitcoinbuyscad to receive notifications on good BTC buy offers. Contact @pingiun for feedback on this bot."
-    )
-
-
-def send_to_channel(context):
-    compare_percent = {
-        "btc_usd": 0.0,
-        "btc_eur": 0.005,
-        "btc_cad": -0.04,
-    }
-    for market, channel in [
-        ("btc_usd", "@bitcoinbuys"),
-        ("btc_eur", "@bitcoinbuyseuro"),
-        ("btc_cad", "@bitcoinbuyscad"),
-    ]:
-        logging.debug(f"Checking good buys for {market}")
-        quote, base = market.split("_")[0], market.split("_")[1]
-        for offer in offers[market]["sells"]:
-            percent = 1 - float(offer["price"]) / prices[market]
-            logging.debug(f"Found trade with {percent}")
-            # Skip if not higher than compare percent
-            if percent <= compare_percent[market]:
-                continue
-            if red.sismember("bisqoffers", offer["offer_id"]):
-                continue
-            red.sadd("bisqoffers", offer["offer_id"])
-            if offer["amount"] != offer["min_amount"]:
-                quote_minmax = (
-                    f"{prec(offer['min_amount'], quote)}-{prec(offer['amount'], quote)}"
-                )
-                base_minmax = f"{prec(float(offer['min_amount'])*float(offer['price']), base)}-{prec(float(offer['amount'])*float(offer['price']), base)}"
-            else:
-                quote_minmax = f"{prec(offer['min_amount'], quote)}"
-                base_minmax = (
-                    f"{prec(float(offer['min_amount'])*float(offer['price']), base)}"
-                )
-            lower_higher = "higher" if percent < 0.0 else "lower"
-            try:
-                context.bot.send_message(
-                    channel,
-                    ("❇️" * max(0, round(percent * 100)))
-                    + f'<b>{abs(percent):.2%} {lower_higher} than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
-                    f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} (current market price: {prices[market]})\n"
-                    f"{quote.upper()} (min-max): {quote_minmax}\n"
-                    f"{base.upper()} (min-max): {base_minmax}\n"
-                    f"Payment method: {METHODS[offer['payment_method']]}\n"
-                    f"Offer ID: {offer['offer_id'].split('-')[0]}",
-                    parse_mode="html",
-                    disable_web_page_preview=True,
-                )
-            except telegram.error.Unauthorized as e:
-                logging.exception(e)
-
-
 def other(update, context):
     text = update.message.text
     if update.message.via_bot:
@@ -429,16 +431,6 @@ def other(update, context):
             parse_mode="html",
             disable_web_page_preview=True,
         )
-
-
-def update_all(context=None):
-    for market in MARKETS:
-        if updater is not None and not updater.is_idle:
-            return
-        update_market(market)
-    update_prices_kraken(KRAKEN_MARKETS)
-    if context:
-        context.job_queue.run_once(callback=send_to_channel, when=1)
 
 
 def inline_result(update, context):
@@ -475,8 +467,8 @@ def main():
     job_queue = updater.job_queue
     job_queue.run_repeating(callback=update_all, first=first, interval=90)
     dispatcher = updater.dispatcher
-    dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
+    dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(
         MessageHandler(callback=other, filters=Filters.text & Filters.private)
     )
