@@ -115,6 +115,7 @@ ICONS = {
 
 offers = {}
 prices = {}
+updater = None
 
 
 def update_market(market):
@@ -395,7 +396,7 @@ def other(update, context):
 
 def update_all(context=None):
     for market in MARKETS:
-        if context is not None and not context.job_queue._running:
+        if updater is not None and not updater.is_idle:
             return
         update_market(market)
     for market in COINBASE_MARKETS:
@@ -414,6 +415,7 @@ def inline_result(update, context):
 def main():
     global offers
     global prices
+    global updater
 
     first = 0
     offers_file = os.path.join(STATE_DIRECTORY, "offers.json")
