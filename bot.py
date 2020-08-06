@@ -15,6 +15,7 @@ import requests
 from telegram import InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ChosenInlineResultHandler, CommandHandler, MessageHandler, Updater, InlineQueryHandler
 from telegram.ext.filters import Filters
+import telegram
 
 logging.basicConfig(level=logging.DEBUG)
 red = redis.StrictRedis()
@@ -113,6 +114,10 @@ ICONS = {
     "buy": "https://raw.githubusercontent.com/pingiun/BisqBot/1124f373edacf0da1c4cd20b5cc7fbb2cf6f2e95/buy_icon.png",
     "sell": "https://raw.githubusercontent.com/pingiun/BisqBot/1124f373edacf0da1c4cd20b5cc7fbb2cf6f2e95/sell_icon.png",
 }
+INV_DIRECT = {
+    "BUY": "SELL",
+    "SELL": "BUY",
+}
 
 offers = {}
 prices = {}
@@ -166,7 +171,7 @@ def prec(value, cur):
 
 
 def query_title(offer, quote, base):
-    return f"You can {offer['direction'].lower()} {prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}"
+    return f"You can {INV_DIRECT[offer['direction']].lower()} {prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}"
 
 
 def query_desc(offer, quote, base):
@@ -184,7 +189,7 @@ def query_desc(offer, quote, base):
 def query_msg(offer, quote, base):
     percentinfo = ""
     if prices.get(f"{quote}_{base}"):
-        percent = abs(1 - prices[f"{quote}_{base}"] / float(offer["price"]))
+        percent = 1 - prices[f"{quote}_{base}"] / float(offer["price"])
         percentinfo = f" ({percent:+.2%} market)"
     if offer["amount"] != offer["min_amount"]:
         quote_minmax = (
@@ -196,7 +201,7 @@ def query_msg(offer, quote, base):
         base_minmax = f"{prec(float(offer['min_amount'])*float(offer['price']), base)}"
     short_id = offer["offer_id"].split("-")[0]
     return InputTextMessageContent(
-        message_text=f"<b><a href=\"https://bisq.network\">Bisq</a> currently has an offer to {offer['direction'].lower()} "
+        message_text=f"<b><a href=\"https://bisq.network\">Bisq</a> currently has an offer where you can {INV_DIRECT[offer['direction']].lower()} "
         f"{prec(offer['amount'], quote)} {quote.upper()} for {prec(offer['volume'], base)} {base.upper()}</b>\n\n"
         f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)}{percentinfo}\n"
         f"{quote.upper()} (min-max): {quote_minmax}\n"
@@ -212,27 +217,30 @@ def overview(quote, base):
     market = f"{quote}_{base}"
     best_buy = offers[market]["buys"][1]
     best_sell = offers[market]["sells"][1]
-    buy_prct = ""
-    sell_prct = ""
+    buy_market_info = sell_market_info = ""
+
     if prices.get(f"{quote}_{base}"):
-        buy_percent = abs(1 - prices[f"{quote}_{base}"] / float(best_buy["price"]))
-        if buy_percent < -0.01:
+        buy_percent = 1 - prices[f"{quote}_{base}"] / float(best_buy["price"])
+        if buy_percent > 0.01:
             buy_prct = "<b>{:+.2%}</b>".format(buy_percent)
         else:
             buy_prct = "{:+.2%}".format(buy_percent)
+        buy_market_info = f" ({buy_prct} market)"
 
-        sell_percent = abs(1 - float(best_sell["price"]) / prices[f"{quote}_{base}"])
+        sell_percent = 1 - prices[f"{quote}_{base}"] / float(best_sell["price"])
         if sell_percent < -0.01:
             sell_prct = "<b>{:+.2%}</b>".format(sell_percent)
         else:
             sell_prct = "{:+.2%}".format(sell_percent)
+        sell_market_info = f" ({sell_prct} market)"
+
     market_txt = market.replace("_", "/").upper()
     content = InputTextMessageContent(
         message_text=f"Offer size: <b>{prec(best_sell['volume'], base)} {base.upper()}</b> / {prec(best_sell['amount'], quote)} {quote.upper()}\n"
-        f"Price: {prec(best_sell['price'], base)} ({sell_prct} market)\n\n"
+        f"Price: {prec(best_sell['price'], base)}{sell_market_info}\n\n"
         f"↑ Lowest ask / Spread: {1 - float(best_buy['price']) / float(best_sell['price']):.2%} / Highest bid ↓\n\n"
         f"Offer size: <b>{prec(best_buy['volume'], base)} {base.upper()}</b> / {prec(best_buy['amount'], quote)} {quote.upper()}\n"
-        f"Price: {prec(best_buy['price'], base)} ({buy_prct} market)",
+        f"Price: {prec(best_buy['price'], base)}{buy_market_info}",
         parse_mode="html",
     )
     return InlineQueryResultArticle(
@@ -252,7 +260,7 @@ def empty_query():
             title=query_title(offer, "btc", cur),
             description=query_desc(offer, "btc", cur),
             input_message_content=query_msg(offer, "btc", cur),
-            thumb_url=ICONS[offer["direction"].lower()],
+            thumb_url=ICONS[INV_DIRECT[offer["direction"]].lower()],
         )
         for cur, what in product(["usd", "eur"], ["buys", "sells"])
         for offer in offers[f"btc_{cur}"][what][:1]
@@ -290,9 +298,9 @@ def query(update, context):
             if word.lower() in cur.lower():
                 markets.append(market)
         if is_prefix(word.lower(), "buys") or is_prefix(word.lower(), "asks"):
-            filters.append("buys")
-        if is_prefix(word.lower(), "sells") or is_prefix(word.lower(), "bids"):
             filters.append("sells")
+        if is_prefix(word.lower(), "sells") or is_prefix(word.lower(), "bids"):
+            filters.append("buys")
     if not markets and not filters:
         update.inline_query.answer(empty_query(), cache_time=60)
     markets = set(markets)
@@ -315,7 +323,7 @@ def query(update, context):
                             title=query_title(offer, quote, base),
                             description=query_desc(offer, quote, base),
                             input_message_content=query_msg(offer, quote, base),
-                            thumb_url=ICONS[offer["direction"].lower()],
+                            thumb_url=ICONS[INV_DIRECT[offer["direction"]].lower()],
                         )
                     )
                 except IndexError:
@@ -327,23 +335,30 @@ def start(update, context):
     report(update, "start")
     update.message.reply_text(
         "You found the BisqBot! Currently I don't do anything in private chats, but"
-        " feel free to try my inline mode in this chat.\n Just start by typing @BisqBot, then you can search for"
+        " feel free to try my inline mode in this chat.\nJust start by typing @BisqBot, then you can search for"
         " markets and offers with keywords like eur, usd, buy and sell.\n\n"
         "Follow @bitcoinbuys or @bitcoinbuyseuro to receive notifications on good BTC buy offers. Contact @pingiun for feedback on this bot."
     )
 
 
 def send_to_channel(context):
+    compare_percent = {
+        "btc_usd": 0.0,
+        "btc_eur": 0.005,
+        "btc_cad": -0.04,
+    }
     for market, channel in [
         ("btc_usd", "@bitcoinbuys"),
         ("btc_eur", "@bitcoinbuyseuro"),
+        ("btc_cad", "@bitcoinbuyscad")
     ]:
         logging.debug(f"Checking good buys for {market}")
         quote, base = market.split("_")[0], market.split("_")[1]
         for offer in offers[market]["sells"]:
-            percent = 1 - prices[market] / float(offer["price"])
+            percent = 1 - float(offer["price"]) / prices[market]
             logging.debug(f"Found trade with {percent}")
-            if percent > -0.005:
+            # Skip if not higher than compare percent
+            if percent <= compare_percent[market]:
                 continue
             if red.sismember("bisqoffers", offer["offer_id"]):
                 continue
@@ -358,18 +373,22 @@ def send_to_channel(context):
                 base_minmax = (
                     f"{prec(float(offer['min_amount'])*float(offer['price']), base)}"
                 )
-            context.bot.send_message(
-                channel,
-                ("❇️" * round(abs(percent) * 100))
-                + f'<b>{abs(percent):.2%} lower than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
-                f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} (current market price: {prices[market]})\n"
-                f"{quote.upper()} (min-max): {quote_minmax}\n"
-                f"{base.upper()} (min-max): {base_minmax}\n"
-                f"Payment method: {METHODS[offer['payment_method']]}\n"
-                f"Offer ID: {offer['offer_id'].split('-')[0]}",
-                parse_mode="html",
-                disable_web_page_preview=True,
-            )
+            lower_higher = "higher" if percent < 0.0 else "lower"
+            try:
+                context.bot.send_message(
+                    channel,
+                    ("❇️" * max(0, round(percent * 100)))
+                    + f'<b>{abs(percent):.2%} {lower_higher} than market price BTC available on <a href="https://bisq.network">Bisq</a></b>\n\n'
+                    f"Price in {base.upper()} for 1 {quote.upper()}: {prec(offer['price'], quote)} (current market price: {prices[market]})\n"
+                    f"{quote.upper()} (min-max): {quote_minmax}\n"
+                    f"{base.upper()} (min-max): {base_minmax}\n"
+                    f"Payment method: {METHODS[offer['payment_method']]}\n"
+                    f"Offer ID: {offer['offer_id'].split('-')[0]}",
+                    parse_mode="html",
+                    disable_web_page_preview=True,
+                )
+            except telegram.error.Unauthorized as e:
+                logging.exception(e)
 
 
 def other(update, context):
@@ -430,12 +449,11 @@ def main():
 
     updater = Updater(token=TG_TOKEN, use_context=True)
     job_queue = updater.job_queue
-    # job_queue.run_once(callback=send_to_channel, when=1)
     job_queue.run_repeating(callback=update_all, first=first, interval=90)
     dispatcher = updater.dispatcher
     dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
-    dispatcher.add_handler(MessageHandler(callback=other, filters=Filters.text))
+    dispatcher.add_handler(MessageHandler(callback=other, filters=Filters.text & Filters.private))
     dispatcher.add_handler(ChosenInlineResultHandler(callback=inline_result))
     updater.start_polling()
     updater.idle()
