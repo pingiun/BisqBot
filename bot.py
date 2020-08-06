@@ -417,7 +417,7 @@ def query(update, context):
 
 def other(update, context):
     text = update.message.text
-    if update.message.via_bot:
+    if update.message.parse_entities(["bold"]):
         return
     if any(
         [
