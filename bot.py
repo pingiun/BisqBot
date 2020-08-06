@@ -6,6 +6,7 @@ import os
 import time
 
 from datetime import date
+from functools import reduce
 from itertools import product
 
 import redis
@@ -30,10 +31,10 @@ MARKETS = [
     "btc_brl",
     "btc_cad",
 ]
-COINBASE_MARKETS = ["btc_eur", "btc_usd", "btc_gbp"]
+COINBASE_MARKETS = []
+KRAKEN_MARKETS = ["btc_eur", "btc_usd", "btc_gbp", "btc_cad", "xmr_btc"]
 OFFERS_URL = "https://markets.bisq.network/api/offers?market={}"
-PRICE_URL = "https://api.coinbase.com/v2/prices/BTC-{}/spot"
-POLINIEX_URL = "https://poloniex.com/public?command=returnTicker"
+KRAKEN_URL = "https://api.kraken.com/0/public/Ticker?pair={}"
 METHODS = {
     "NATIONAL_BANK": "National bank transfer",
     "SAME_BANK": "Transfer with same bank",
@@ -126,21 +127,16 @@ def update_market(market):
     logging.debug(f"Downloaded {market} market")
 
 
-def update_price(currency):
-    global prices
-    logging.debug(f"Updating Coinbase {currency} price")
-    r = requests.get(PRICE_URL.format(currency.upper()))
-    prices[f"btc_{currency}"] = float(r.json()["data"]["amount"])
-    logging.debug(prices)
-
-
-def update_prices_poliniex(filters):
-    r = requests.get(POLINIEX_URL)
-    for market, values in r.json().items():
-        if market in filters:
-            logging.debug(f"Updating Poliniex {market} price")
-            idx = f"{market.lower().split('_')[1]}_{market.lower().split('_')[0]}"
-            prices[idx] = (float(values["lowestAsk"]) + float(values["highestBid"])) / 2
+def update_prices_kraken(markets):
+    repls = {"btc": "xxbt", "xmr": "xxmr", "eur": "zeur", "usd": "zusd", "cad": "zcad", "gbp": "zgbp", "_": ""}
+    kraken_map = {market: reduce(lambda a, kv: a.replace(*kv), repls.items(), market).upper() for market in markets}
+    try:
+        r = requests.get(KRAKEN_URL.format(",".join(kraken_map.values())))
+        data = r.json()
+        for market, kraken_market in kraken_map.items():
+            prices[market] = (float(data['result'][kraken_market]["b"][0]) + float(data['result'][kraken_market]["a"][0])) / 2
+    except KeyError as e:
+        logging.debug(r.text)
     logging.debug(prices)
 
 def report(update, type_):
@@ -399,11 +395,7 @@ def update_all(context=None):
         if updater is not None and not updater.is_idle:
             return
         update_market(market)
-    for market in COINBASE_MARKETS:
-        if context is not None and not context.job_queue._running:
-            return
-        update_price(market.replace("btc_", ""))
-    update_prices_poliniex(["BTC_XMR"])
+    update_prices_kraken(KRAKEN_MARKETS)
     if context:
         context.job_queue.run_once(callback=send_to_channel, when=1)
 
