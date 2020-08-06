@@ -1,2 +1,5 @@
 *.pyc
 venv/
+chosen_query.ndjson
+offers.json
+prices.json
