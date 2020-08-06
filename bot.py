@@ -13,7 +13,13 @@ import redis
 import requests
 
 from telegram import InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import ChosenInlineResultHandler, CommandHandler, MessageHandler, Updater, InlineQueryHandler
+from telegram.ext import (
+    ChosenInlineResultHandler,
+    CommandHandler,
+    MessageHandler,
+    Updater,
+    InlineQueryHandler,
+)
 from telegram.ext.filters import Filters
 import telegram
 
@@ -133,16 +139,31 @@ def update_market(market):
 
 
 def update_prices_kraken(markets):
-    repls = {"btc": "xxbt", "xmr": "xxmr", "eur": "zeur", "usd": "zusd", "cad": "zcad", "gbp": "zgbp", "_": ""}
-    kraken_map = {market: reduce(lambda a, kv: a.replace(*kv), repls.items(), market).upper() for market in markets}
+    repls = {
+        "btc": "xxbt",
+        "xmr": "xxmr",
+        "eur": "zeur",
+        "usd": "zusd",
+        "cad": "zcad",
+        "gbp": "zgbp",
+        "_": "",
+    }
+    kraken_map = {
+        market: reduce(lambda a, kv: a.replace(*kv), repls.items(), market).upper()
+        for market in markets
+    }
     try:
         r = requests.get(KRAKEN_URL.format(",".join(kraken_map.values())))
         data = r.json()
         for market, kraken_market in kraken_map.items():
-            prices[market] = (float(data['result'][kraken_market]["b"][0]) + float(data['result'][kraken_market]["a"][0])) / 2
+            prices[market] = (
+                float(data["result"][kraken_market]["b"][0])
+                + float(data["result"][kraken_market]["a"][0])
+            ) / 2
     except KeyError as e:
         logging.debug(r.text)
     logging.debug(prices)
+
 
 def report(update, type_):
     try:
@@ -153,6 +174,7 @@ def report(update, type_):
             red.incr(f"bisqbot:amount_{type_}:{date.today()}")
     except Exception as e:
         logging.exception(e)
+
 
 def is_prefix(chk, x):
     return x[: len(chk)] == chk
@@ -350,7 +372,7 @@ def send_to_channel(context):
     for market, channel in [
         ("btc_usd", "@bitcoinbuys"),
         ("btc_eur", "@bitcoinbuyseuro"),
-        ("btc_cad", "@bitcoinbuyscad")
+        ("btc_cad", "@bitcoinbuyscad"),
     ]:
         logging.debug(f"Checking good buys for {market}")
         quote, base = market.split("_")[0], market.split("_")[1]
@@ -418,10 +440,12 @@ def update_all(context=None):
     if context:
         context.job_queue.run_once(callback=send_to_channel, when=1)
 
+
 def inline_result(update, context):
     report(update, "query_result")
     chosenquerylog.write(update.chosen_inline_result.to_json())
     chosenquerylog.write("\n")
+
 
 def main():
     global offers
@@ -453,7 +477,9 @@ def main():
     dispatcher = updater.dispatcher
     dispatcher.add_handler(InlineQueryHandler(callback=query))
     dispatcher.add_handler(CommandHandler(callback=start, command="start"))
-    dispatcher.add_handler(MessageHandler(callback=other, filters=Filters.text & Filters.private))
+    dispatcher.add_handler(
+        MessageHandler(callback=other, filters=Filters.text & Filters.private)
+    )
     dispatcher.add_handler(ChosenInlineResultHandler(callback=inline_result))
     updater.start_polling()
     updater.idle()
