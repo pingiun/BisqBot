@@ -337,7 +337,7 @@ def start(update, context):
         "You found the BisqBot! Currently I don't do anything in private chats, but"
         " feel free to try my inline mode in this chat.\nJust start by typing @BisqBot, then you can search for"
         " markets and offers with keywords like eur, usd, buy and sell.\n\n"
-        "Follow @bitcoinbuys or @bitcoinbuyseuro to receive notifications on good BTC buy offers. Contact @pingiun for feedback on this bot."
+        "Follow @bitcoinbuys, @bitcoinbuyseuro or @bitcoinbuyscad to receive notifications on good BTC buy offers. Contact @pingiun for feedback on this bot."
     )
 
 
